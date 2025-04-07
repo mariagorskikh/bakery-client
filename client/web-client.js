@@ -13,9 +13,18 @@ const PORT = process.env.PORT || 3100;
 const SERVER_URL = process.env.RAILWAY_SERVER_URL || 'https://bakery-production-8bbd.up.railway.app';
 const MODEL = process.env.MODEL_NAME || "claude-3-sonnet-20240229";
 
+// Add this at the beginning of the file, right after imports
+console.log('Environment variables:');
+console.log('ANTHROPIC_API_KEY set:', process.env.ANTHROPIC_API_KEY ? 'Yes (masked)' : 'No');
+console.log('MODEL_NAME set:', process.env.MODEL_NAME ? process.env.MODEL_NAME : 'No');
+console.log('RAILWAY_SERVER_URL set:', process.env.RAILWAY_SERVER_URL ? process.env.RAILWAY_SERVER_URL : 'No');
+
+// Then update the API key check to have a more specific error message
 // Check if API key is set
-if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === "your_api_key_here") {
+if (!process.env.ANTHROPIC_API_KEY) {
   console.error("Error: ANTHROPIC_API_KEY not set in environment");
+  console.error("Please set the ANTHROPIC_API_KEY environment variable");
+  console.error("Current environment variables:", Object.keys(process.env));
   process.exit(1);
 }
 
