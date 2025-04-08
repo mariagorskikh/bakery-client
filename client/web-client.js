@@ -55,7 +55,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
       <head>
-        <title>MCP Claude Client</title>
+        <title>Bakery Client - MCP with Claude</title>
         <style>
           body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; }
           h1 { color: #333; }
@@ -89,13 +89,13 @@ app.get('/', (req, res) => {
         </style>
       </head>
       <body>
-        <h1>MCP Claude Client</h1>
-        <p>This client connects to the MCP server and uses Claude to process requests.</p>
+        <h1>🧁 Flour Bakery Assistant</h1>
+        <p>Ask about our menu items, pastries, and more! I can fetch the latest information from our website.</p>
         
         <div id="chatbox"></div>
         
         <div id="input-area">
-          <input type="text" id="message" placeholder="Enter your query here...">
+          <input type="text" id="message" placeholder="Ask about our menu items, pastries, or bakery locations...">
           <button id="send">Send</button>
         </div>
         
@@ -114,7 +114,7 @@ app.get('/', (req, res) => {
           })
           .then(response => response.json())
           .then(data => {
-            addStatus('Connected to MCP server. Session ID: ' + sessionId);
+            addStatus('Welcome to Flour Bakery! How can I help you today?');
           })
           .catch(error => {
             addStatus('Error connecting to server: ' + error);
@@ -323,6 +323,7 @@ app.post('/api/chat', async (req, res) => {
       model: MODEL,
       max_tokens: 1024,
       temperature: 0.7,
+      system: "You are a helpful assistant for Flour Bakery. When asked about menu items, offerings, or bakery information, use the fetchWebsite tool to check https://www.flourbakery.com/menu#sweet-treats for accurate information. Answer in a friendly, conversational tone and format information in an easy-to-read way. Never make up menu items.",
       messages: [
         { role: "user", content: message }
       ],
@@ -390,7 +391,21 @@ app.post('/api/chat', async (req, res) => {
         model: MODEL,
         max_tokens: 1024,
         temperature: 0.7,
-        messages: messages
+        system: "You are a helpful assistant for Flour Bakery. When asked about menu items, offerings, or bakery information, use the fetchWebsite tool to check https://www.flourbakery.com/menu#sweet-treats for accurate information. Answer in a friendly, conversational tone and format information in an easy-to-read way. Never make up menu items.",
+        messages: [
+          { role: "user", content: message },
+          { role: "assistant", content: initialResponse.content },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: toolUse.id,
+                content: toolResultData.result.content || [{type: "text", text: "No content returned"}]
+              }
+            ]
+          }
+        ]
       });
       
       // Extract text from final response
