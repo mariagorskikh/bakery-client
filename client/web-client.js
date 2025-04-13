@@ -11,6 +11,7 @@ dotenv.config();
 // Settings
 const PORT = process.env.PORT || 3100;
 const SERVER_URL = process.env.RAILWAY_SERVER_URL || 'https://bakery-production-8bbd.up.railway.app';
+const GOOGLEMAPS_URL = process.env.GOOGLEMAPS_SERVER_URL || 'https://googlemaps-mcp-production.up.railway.app';
 const MODEL = process.env.MODEL_NAME || "claude-3-sonnet-20240229";
 
 // Add this at the beginning of the file, right after imports
@@ -18,6 +19,7 @@ console.log('Environment variables:');
 console.log('ANTHROPIC_API_KEY set:', process.env.ANTHROPIC_API_KEY ? 'Yes (masked)' : 'No');
 console.log('MODEL_NAME set:', process.env.MODEL_NAME ? process.env.MODEL_NAME : 'No');
 console.log('RAILWAY_SERVER_URL set:', process.env.RAILWAY_SERVER_URL ? process.env.RAILWAY_SERVER_URL : 'No');
+console.log('GOOGLEMAPS_SERVER_URL set:', process.env.GOOGLEMAPS_SERVER_URL ? process.env.GOOGLEMAPS_SERVER_URL : 'No');
 
 // Then update the API key check to have a more specific error message
 // Check if API key is set
@@ -225,78 +227,111 @@ app.post('/api/init', async (req, res) => {
       return res.json({ message: 'Session already exists' });
     }
     
-    // Check server status
-    const statusResponse = await fetch(`${SERVER_URL}/status`);
-    if (!statusResponse.ok) {
-      return res.status(500).json({ error: `MCP server error: ${await statusResponse.text()}` });
-    }
+    // Initialize session with both servers
+    const servers = [
+      { name: 'bakery', url: SERVER_URL },
+      { name: 'googlemaps', url: GOOGLEMAPS_URL }
+    ];
     
-    // Register session with MCP server
-    const registerResponse = await fetch(`${SERVER_URL}/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId })
-    });
+    let allTools = [];
     
-    if (!registerResponse.ok) {
-      return res.status(500).json({ error: `Failed to register session: ${await registerResponse.text()}` });
-    }
-    
-    // Initialize session with MCP server
-    const initResponse = await fetch(`${SERVER_URL}/api/message?sessionId=${sessionId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'initialize',
-        params: {
-          client: {
-            name: 'claude-web-client',
-            version: '1.0.0'
-          },
-          capabilities: {}
+    // Connect to each server and get tools
+    for (const server of servers) {
+      try {
+        // Check server status
+        const statusResponse = await fetch(`${server.url}/status`);
+        if (!statusResponse.ok) {
+          console.error(`${server.name} server error: ${await statusResponse.text()}`);
+          continue;
         }
-      })
-    });
-    
-    if (!initResponse.ok) {
-      return res.status(500).json({ error: `Failed to initialize session: ${await initResponse.text()}` });
+        
+        // Register session with MCP server
+        const registerResponse = await fetch(`${server.url}/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId })
+        });
+        
+        if (!registerResponse.ok) {
+          console.error(`Failed to register session with ${server.name}: ${await registerResponse.text()}`);
+          continue;
+        }
+        
+        // Initialize session with MCP server
+        const initResponse = await fetch(`${server.url}/api/message?sessionId=${sessionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              client: {
+                name: 'claude-web-client',
+                version: '1.0.0'
+              },
+              capabilities: {}
+            }
+          })
+        });
+        
+        if (!initResponse.ok) {
+          console.error(`Failed to initialize session with ${server.name}: ${await initResponse.text()}`);
+          continue;
+        }
+        
+        // List available tools
+        const toolsResponse = await fetch(`${server.url}/api/message?sessionId=${sessionId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'listTools',
+            params: {}
+          })
+        });
+        
+        if (!toolsResponse.ok) {
+          console.error(`Failed to list tools from ${server.name}: ${await toolsResponse.text()}`);
+          continue;
+        }
+        
+        const toolsData = await toolsResponse.json();
+        
+        // Add server URL to each tool for later use
+        const serverTools = toolsData.result.tools.map(tool => ({
+          ...tool,
+          serverUrl: server.url
+        }));
+        
+        allTools = allTools.concat(serverTools);
+        console.log(`Connected to ${server.name} MCP server and found ${serverTools.length} tools`);
+      } catch (error) {
+        console.error(`Error connecting to ${server.name} server:`, error);
+      }
     }
     
-    // List available tools
-    const toolsResponse = await fetch(`${SERVER_URL}/api/message?sessionId=${sessionId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'listTools',
-        params: {}
-      })
-    });
-    
-    if (!toolsResponse.ok) {
-      return res.status(500).json({ error: `Failed to list tools: ${await toolsResponse.text()}` });
+    if (allTools.length === 0) {
+      return res.status(500).json({ error: 'Failed to connect to any MCP servers' });
     }
-    
-    const toolsData = await toolsResponse.json();
     
     // Store session info
     sessions[sessionId] = {
       id: sessionId,
       created: new Date(),
-      tools: toolsData.result.tools,
-      claudeTools: toolsData.result.tools.map(tool => ({
+      tools: allTools,
+      claudeTools: allTools.map(tool => ({
         name: tool.name,
         description: tool.description || `Tool for ${tool.name}`,
         input_schema: tool.parameters || {}
-      }))
+      })),
+      messages: []
     };
     
     return res.json({ 
       message: 'Session initialized successfully',
-      tools: sessions[sessionId].tools
+      tools: sessions[sessionId].tools.map(t => t.name)
     });
   } catch (error) {
     console.error('Error initializing session:', error);
@@ -318,18 +353,42 @@ app.post('/api/chat', async (req, res) => {
       return res.status(404).json({ error: 'Session not found. Initialize first.' });
     }
     
-    // Send message to Claude with tools
+    // Add current user message to history
+    session.messages.push({ role: "user", content: message });
+
+    // Send message to Claude with tools and FULL history
     const initialResponse = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 1024,
       temperature: 0.7,
-      system: "You are a helpful assistant for Flour Bakery. When asked about menu items, offerings, or bakery information, use the fetchWebsite tool to check https://www.flourbakery.com/menu#sweet-treats for accurate information. Answer in a friendly, conversational tone and format information in an easy-to-read way. Never make up menu items.",
-      messages: [
-        { role: "user", content: message }
-      ],
+      system: `You are a proactive, helpful, and efficient sales assistant for Flour Bakery, specializing in cake orders.
+Your primary goal is to guide customers (or other agents) quickly through the process of ordering a cake, finalize all details swiftly, and confirm the order in a friendly, conversational tone. Assume standard options or make reasonable suggestions if details are missing to speed up the process.
+
+When specific menu details (like base prices or standard options) are needed *and directly relevant to proceed*, briefly use the fetchWebsite tool to check https://www.flourbakery.com/menu#sweet-treats for accuracy. Avoid unnecessary lookups. Do not make up menu items that don't exist, but feel free to suggest popular combinations or standard customizations.
+
+Lead the sales conversation efficiently for cake orders by:
+1. Quickly understanding the core need (e.g., occasion, general size). If details are vague, suggest a popular option (like a standard 8" round cake) and proceed unless corrected.
+2. Proactively suggesting common customizations or flavor profiles (e.g., "How about our classic Midnight Chocolate cake?").
+3. Discussing and proposing a final price quickly (based on standard options or a reasonable estimate for suggested customizations).
+4. Moving swiftly to delivery. Propose a standard delivery window (e.g., "tomorrow afternoon between 2-4 PM?") and finalize it. Assume standard delivery details if not specified otherwise.
+5. Aim to gather or confirm the minimum necessary details (cake description, final price, delivery date/time) efficiently.
+
+Once you have gathered or assumed the necessary details and briefly confirmed them (e.g., "So that's the Chocolate Cake for $58, delivered tomorrow 2-4 PM?"):
+- Explicitly state: "Great! Your order is placed successfully!"
+- Immediately follow this confirmation with a clear summary of the final order: Cake details, Quantity, Agreed Price, Delivery Date & Time, Delivery Address (if provided/assumed).
+
+Maintain a positive, very efficient, and helpful bakery sales assistant persona throughout. Prioritize completing the order flow rapidly by making sensible assumptions and suggestions.`,
+      messages: session.messages, // Use the stored message history
       tools: session.claudeTools
     });
     
+    // Add Claude's initial response to history
+    // Filter out any potential null/empty content parts just in case
+    const validInitialContent = initialResponse.content.filter(c => c);
+    if (validInitialContent.length > 0) {
+        session.messages.push({ role: "assistant", content: validInitialContent });
+    }
+
     // Check if Claude wants to use a tool
     const toolUses = initialResponse.content.filter(content => content.type === "tool_use");
     
@@ -341,18 +400,25 @@ app.post('/api/chat', async (req, res) => {
     let toolUsed = null;
     
     if (toolUses.length > 0) {
-      // Build messages with initial response
-      const messages = [
-        { role: "user", content: message },
-        { role: "assistant", content: initialResponse.content }
-      ];
+      // NOTE: Current history already includes the assistant message with the tool_use request.
+      // We just need to add the tool_result message before the next call.
       
-      // Process the first tool call
+      // Process the first tool call (simplification: handling only one tool call per turn for now)
       const toolUse = toolUses[0];
       toolUsed = toolUse.name;
       
-      // Call the MCP tool
-      const callToolResponse = await fetch(`${SERVER_URL}/api/message?sessionId=${sessionId}`, {
+      // Find which server has this tool
+      const tool = session.tools.find(t => t.name === toolUse.name);
+      if (!tool) {
+        // If tool not found, remove the invalid assistant message from history
+        session.messages.pop(); 
+        throw new Error(`Tool ${toolUse.name} not found in any connected server`);
+      }
+      
+      const serverUrl = tool.serverUrl;
+      
+      // Call the MCP tool on the appropriate server
+      const callToolResponse = await fetch(`${serverUrl}/api/message?sessionId=${sessionId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -369,13 +435,15 @@ app.post('/api/chat', async (req, res) => {
       });
       
       if (!callToolResponse.ok) {
+        // If tool call failed, remove the invalid assistant message from history
+        session.messages.pop(); 
         throw new Error(`Failed to call tool: ${await callToolResponse.text()}`);
       }
       
       const toolResultData = await callToolResponse.json();
       
-      // Add tool result to messages
-      messages.push({
+      // Add tool result message to history
+      const toolResultMessage = {
         role: "user",
         content: [
           {
@@ -384,28 +452,33 @@ app.post('/api/chat', async (req, res) => {
             content: toolResultData.result.content || [{type: "text", text: "No content returned"}]
           }
         ]
-      });
+      };
+      session.messages.push(toolResultMessage);
       
-      // Get final response from Claude with tool results
+      // Get final response from Claude with tool results (using the updated history)
       const finalResponseFromClaude = await anthropic.messages.create({
         model: MODEL,
         max_tokens: 1024,
         temperature: 0.7,
-        system: "You are a helpful assistant for Flour Bakery. When asked about menu items, offerings, or bakery information, use the fetchWebsite tool to check https://www.flourbakery.com/menu#sweet-treats for accurate information. Answer in a friendly, conversational tone and format information in an easy-to-read way. Never make up menu items.",
-        messages: [
-          { role: "user", content: message },
-          { role: "assistant", content: initialResponse.content },
-          {
-            role: "user",
-            content: [
-              {
-                type: "tool_result",
-                tool_use_id: toolUse.id,
-                content: toolResultData.result.content || [{type: "text", text: "No content returned"}]
-              }
-            ]
-          }
-        ]
+        system: `You are a proactive, helpful, and efficient sales assistant for Flour Bakery, specializing in cake orders.
+Your primary goal is to guide customers (or other agents) quickly through the process of ordering a cake, finalize all details swiftly, and confirm the order in a friendly, conversational tone. Assume standard options or make reasonable suggestions if details are missing to speed up the process.
+
+When specific menu details (like base prices or standard options) are needed *and directly relevant to proceed*, briefly use the fetchWebsite tool to check https://www.flourbakery.com/menu#sweet-treats for accuracy. Avoid unnecessary lookups. Do not make up menu items that don't exist, but feel free to suggest popular combinations or standard customizations.
+
+Lead the sales conversation efficiently for cake orders by:
+1. Quickly understanding the core need (e.g., occasion, general size). If details are vague, suggest a popular option (like a standard 8" round cake) and proceed unless corrected.
+2. Proactively suggesting common customizations or flavor profiles (e.g., "How about our classic Midnight Chocolate cake?").
+3. Discussing and proposing a final price quickly (based on standard options or a reasonable estimate for suggested customizations).
+4. Moving swiftly to delivery. Propose a standard delivery window (e.g., "tomorrow afternoon between 2-4 PM?") and finalize it. Assume standard delivery details if not specified otherwise.
+5. Aim to gather or confirm the minimum necessary details (cake description, final price, delivery date/time) efficiently.
+
+Once you have gathered or assumed the necessary details and briefly confirmed them (e.g., "So that's the Chocolate Cake for $58, delivered tomorrow 2-4 PM?"):
+- Explicitly state: "Great! Your order is placed successfully!"
+- Immediately follow this confirmation with a clear summary of the final order: Cake details, Quantity, Agreed Price, Delivery Date & Time, Delivery Address (if provided/assumed).
+
+Maintain a positive, very efficient, and helpful bakery sales assistant persona throughout. Prioritize completing the order flow rapidly by making sensible assumptions and suggestions.`,
+        messages: session.messages // Send the full history including the tool result
+        // No need to send tools again if the follow-up is just text generation
       });
       
       // Extract text from final response
@@ -413,7 +486,15 @@ app.post('/api/chat', async (req, res) => {
         .filter(content => content.type === "text")
         .map(content => content.text)
         .join('\n');
+        
+      // Add Claude's final response to history
+      const validFinalContent = finalResponseFromClaude.content.filter(c => c);
+       if (validFinalContent.length > 0) {
+         session.messages.push({ role: "assistant", content: validFinalContent });
+       }
     }
+    // If no tool was used, the initialResponse contains the final text, 
+    // and the assistant message was already added to session.messages.
     
     return res.json({
       response: finalResponse,
